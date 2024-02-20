@@ -1,5 +1,8 @@
 {
   "name": "xver",
   "version": "0.0.1",
-  "scripts": {}
+  "scripts": {},
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
 }
