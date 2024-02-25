@@ -1,9 +1,10 @@
-import { Client, NoAuthMethod, PasswordAuthMethod, PublicKeyAuthMethod, ServerHostKeyAlgorithm } from 'ssh2';
+import { Client, ServerHostKeyAlgorithm } from 'ssh2';
 import { InternalConfig, findDefault } from './config';
 import { ElementOf, alwaysMatch, neverMatch, subStringUntil } from './utils';
-import { open } from 'fs/promises';
+import { open, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
+import { existsSync } from 'fs';
 
 function getOpensshPath(filename: string): string {
   return join(homedir(), '.ssh', filename);
@@ -29,13 +30,15 @@ function getSSHPublicKeyAlg(from: Buffer | string) {
   return parsed.toString('utf8');
 }
 
-function parseSSHFormat(line: string): [string, string] | undefined {
+function parseSSHFormat(line: string): [string, string, string] | undefined {
   line = subStringUntil(line, '#');
   if (line.isWhitespace()) return undefined;
-  const [alg, value] = line.split(' ');
-  return [alg, value];
+  const [hostname, alg, value] = line.split(' ');
+  return [hostname, alg, value];
 }
 
+const supportedIdSuffix = ['ed25519', 'ecdsa', 'rsa'] as const;
+export type SupportedIdSuffix = typeof supportedIdSuffix[number];
 export class XverClient {
   private readonly config: InternalConfig;
   private readonly ssh2Client: Client;
@@ -43,6 +46,7 @@ export class XverClient {
     this.config = config;
     this.ssh2Client = new Client({ captureRejections: false });
     this.ssh2Client.on('error', (err) => console.error(err.message));
+    this.ssh2Client.on('ready', () => console.log('Connected!'));
   }
 
   async connect(server?: ElementOf<InternalConfig['servers']>) {
@@ -60,21 +64,22 @@ export class XverClient {
       const kHostFile = await open(getOpensshPath('known_hosts'));
       for await (let line of kHostFile.readLines({ autoClose: true })) {
         const result = parseSSHFormat(line);
-        if (result)
-          hostkeys.set(result[0], result[1]);
+        if (!result) continue;
+        const [hostname, alg, key] = result;
+        if (hostname !== server.hostname) continue;
+        hostkeys.set(alg, key);
       }
     }
+    let idFiles: string[] = [];
     if (useId) {
-      //TODO
+      if (useId === true) idFiles = supportedIdSuffix.map(s => getOpensshPath(`id_${s}`));
+      else if (typeof useId === 'string') idFiles = [getOpensshPath(`id_${useId}`)];
+      else idFiles = useId.map(s => getOpensshPath(`id_${s}`));
     }
-    const triedMethods: Set<string> = new Set();
     const username = server.username ?? 'root';
-    function tried(method: Omit<NoAuthMethod, 'username'> | Omit<PublicKeyAuthMethod, 'username'> | Omit<PasswordAuthMethod, 'username'>) {
-      triedMethods.add(method.type);
-      return method;
-    }
     const supportedHostkeyAlg: ServerHostKeyAlgorithm[] = ['ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa'];
     const hostkeyAlgList = supportedHostkeyAlg.sortLike([...hostkeys.keys()] as any);
+    let pwdTryTimes = 0;
     this.ssh2Client.connect({
       host: server.hostname,
       port: server.sshPort ?? 22,
@@ -101,17 +106,20 @@ export class XverClient {
         }
       },
       authHandler(methodsLeft, partialSuccess, next) {
-        methodsLeft = methodsLeft?.filter(m => !triedMethods.has(m)) ?? [];
-        if (!methodsLeft.length)
-          if (triedMethods.has('none')) return false;
-          else return tried({ type: 'none' });
-        else {
-          //TODO use id_* in .ssh or provided values in config
-          if (methodsLeft.includes('publickey')) {
-            return tried({ type: 'publickey', key: '' });
+        methodsLeft ??= ['publickey', 'password'];
+        if (methodsLeft.includes('publickey')) {
+          while (idFiles.length) {
+            const idPath = idFiles.shift()!;
+            if (existsSync(idPath)) {
+              readFile(idPath).then((key) => next({ type: 'publickey', key, username }));
+              return undefined;
+            }
           }
-          if (methodsLeft.includes('password'))
-            return tried({ type: 'password', password: '' });
+        }
+        if (methodsLeft.includes('password') && pwdTryTimes < 3) {
+          //TODO prompt for password, disapprove/disable providing password in config
+          pwdTryTimes++;
+          return { type: 'password' };
         }
       }
     });

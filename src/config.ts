@@ -1,3 +1,4 @@
+import { SupportedIdSuffix } from "./connect";
 import { throwErr } from "./error";
 import { ElementOf, alwaysMatch, isEmpty, neverMatch, removeProps, toArray, toInt } from "./utils";
 
@@ -19,11 +20,10 @@ export type ServerConfig = Host & {
 
 export interface AllowPatternRecord { allowPattern: string }
 export interface BlockPatternRecord { blockPattern: string }
-export type IdSuffix = 'rsa';
 export interface XverConfig {
   openssh?: {
     trustKnownHosts?: boolean | AllowPatternRecord | BlockPatternRecord | (AllowPatternRecord & BlockPatternRecord);
-    useId?: boolean | IdSuffix | IdSuffix[];
+    useId?: boolean | SupportedIdSuffix | SupportedIdSuffix[];
   },
   servers?: ServerConfig[]
 }
