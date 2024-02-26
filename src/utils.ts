@@ -111,3 +111,12 @@ export function memoFunction<A, R>(innerFunc: (arg: A) => R): (arg: A) => R {
     }
   };
 }
+
+/**
+ * Return a new promise that will be resolved with a tuple of a boolean and the value of the promise.  
+ * If the promise is resolved, the boolean will be `true` and the value will be the resolved value,  
+ * otherwise the boolean will be `false` and the value will be the reason of rejection.
+ */
+export function asyncFinally<T>(promise: Promise<T>): Promise<[boolean, T]> {
+  return promise.then(value => [true, value], reason => [false, reason]);
+}

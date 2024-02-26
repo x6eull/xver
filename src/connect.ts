@@ -1,6 +1,6 @@
 import { Client, ServerHostKeyAlgorithm } from 'ssh2';
 import { InternalConfig, findDefault } from './config';
-import { ElementOf, alwaysMatch, neverMatch, subStringUntil } from './utils';
+import { ElementOf, alwaysMatch, asyncFinally, neverMatch, subStringUntil } from './utils';
 import { open, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -106,21 +106,26 @@ export class XverClient {
         }
       },
       authHandler(methodsLeft, partialSuccess, next) {
-        methodsLeft ??= ['publickey', 'password'];
-        if (methodsLeft.includes('publickey')) {
-          while (idFiles.length) {
-            const idPath = idFiles.shift()!;
-            if (existsSync(idPath)) {
-              readFile(idPath).then((key) => next({ type: 'publickey', key, username }));
-              return undefined;
+        (async () => {
+          methodsLeft ??= ['publickey', 'password'];
+          if (methodsLeft.includes('publickey'))
+            while (idFiles.length) {
+              const idPath = idFiles.shift()!;
+              if (existsSync(idPath)) {
+                const [readSuccess, value] = await asyncFinally(readFile(idPath));
+                if (!readSuccess || value.byteLength === 0) continue;
+                return { type: 'publickey', key: value };
+              }
             }
+          //No idFiles left, try other methods
+
+          if (methodsLeft.includes('password') && pwdTryTimes < 3) {
+            //TODO prompt for password, disapprove/disable providing password in config
+            pwdTryTimes++;
+            return { type: 'password' };
           }
-        }
-        if (methodsLeft.includes('password') && pwdTryTimes < 3) {
-          //TODO prompt for password, disapprove/disable providing password in config
-          pwdTryTimes++;
-          return { type: 'password' };
-        }
+          return false;
+        })().then(next as (arg: { type: string } | false) => void);
       }
     });
   }
